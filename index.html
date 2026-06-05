@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>Romaneio de Separação</title>
+
+  <!-- libs -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+  <style>
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      padding: 18px;
+      color: #111;
+      background-color: #f9f9f9;
+      background-image: url('LogoQixEscura1024x747.png');
+      background-repeat: no-repeat;
+      background-position: center;
+      background-attachment: fixed;
+      background-size: 40%;
+    }
+
+    h1 {
+      margin: 0 0 18px 0;
+      font-size: 26px;
+      font-weight: 700;
+      color: #ff001f;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      border-left: 6px solid #000;
+      padding-left: 10px;
+    }
+
+    .controls {
+      margin: 10px 0 18px 0;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      background: #000;
+      color: #fff;
+      padding: 12px 16px;
+      border-radius: 8px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+    }
+
+    .controls select,
+    .controls button,
+    .controls input[type=file] {
+      padding: 8px 10px;
+      font-size: 14px;
+      border: none;
+      border-radius: 4px;
+      background: #fff;
+      color: #111;
+      transition: all 0.2s ease;
+    }
+
+    .controls button {
+      background: #ff001f;
+      color: #fff;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    .controls button:hover {
+      background: #d0001b;
+    }
+
+    .small {
+      font-size: 12px;
+      color: #ddd;
+      flex-basis: 100%;
+    }
+
+    #cards {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      margin-top: 10px;
+    }
+
+    .card {
+      border: 1px solid #ccc;
+      background: #fff;
+      padding: 14px;
+      border-radius: 10px;
+      display: grid;
+      grid-template-columns: 1fr 220px;
+      gap: 14px;
+      align-items: center;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    }
+
+    .card .info {
+      font-size: 13px;
+      line-height: 1.4;
+      color: #222;
+    }
+
+    .card .info b {
+      display: inline-block;
+      width: 150px;
+      color: #000;
+    }
+
+    .barcode-wrap {
+      text-align: center;
+      background: #f7f7f7;
+      border-radius: 6px;
+      padding: 10px;
+    }
+
+    .barcode-svg { display: block; margin: 6px auto; height: 50px; }
+
+    .signature-area {
+      margin-top: 10px;
+      display: flex; gap: 8px; align-items: center; justify-content: center;
+    }
+
+    .sig-input {
+      padding: 6px;
+      font-size: 13px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+      flex: 1;
+    }
+
+    .carimbar {
+      padding: 6px 10px;
+      background: #ff001f;
+      border: none;
+      border-radius: 4px;
+      color: #fff;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .sig-text {
+      border-top: 1px dashed #999;
+      padding-top: 6px;
+      min-height: 22px;
+      width: 100%;
+      text-align: center;
+      font-size: 13px;
+      color: #222;
+    }
+  </style>
+</head>
+
+<body>
+
+<h1>Romaneio de Separação</h1>
+
+<div class="controls">
+  <label>Filtrar por Loja/Marketplace:</label>
+  <select id="filterLoja"><option value="">Todas</option></select>
+  <button id="applyFilter">Aplicar Filtro</button>
+  <input type="file" id="fileInput" accept=".csv,.xlsx,.xls" />
+  <button id="pdfBtn">Gerar PDF</button>
+  <div class="small">CSV BR normalmente usa ; como separador</div>
+</div>
+
+<div id="cards"></div>
+
+<script>
+(function(){
+
+const fileInput = document.getElementById('fileInput');
+const cardsEl = document.getElementById('cards');
+const filterSelect = document.getElementById('filterLoja');
+const applyFilterBtn = document.getElementById('applyFilter');
+const pdfBtn = document.getElementById('pdfBtn');
+let rawData = [];
+let visibleData = [];
+
+// normaliza nomes
+function normalizeKey(s){
+  if (!s && s !== 0) return '';
+  return String(s)
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .replace(/\s+/g,'')
+    .replace(/[^a-zA-Z0-9]/g,'')
+    .toLowerCase();
+}
+
+// pega coluna certa
+function pick(row, candidates){
+  for(const c of candidates){
+    if (row[c] !== undefined && row[c] !== null && String(row[c]).trim()!=='')
+      return String(row[c]);
+  }
+  return '';
+}
+
+// parse CSV
+function parseCSV(file){
+  return new Promise((resolve, reject)=>{
+    Papa.parse(file,{
+      header:true,
+      skipEmptyLines:true,
+      delimiter:';',
+      encoding:'UTF-8',
+      complete:r=>{
+        if (r.meta.fields.length<=1){
+          Papa.parse(file,{header:true,skipEmptyLines:true,complete:resolve});
+        } else resolve(r);
+      },
+      error:reject
+    });
+  });
+}
+
+// parse arquivo
+async function parseFile(file){
+  const name = file.name.toLowerCase();
+  if (name.endsWith('.csv')){
+    return parseCSV(file);
+  }
+  return new Promise((resolve,reject)=>{
+    const reader = new FileReader();
+    reader.onload = e=>{
+      const data = new Uint8Array(e.target.result);
+      const wb = XLSX.read(data,{type:'array'});
+      const sh = wb.Sheets[wb.SheetNames[0]];
+      const json = XLSX.utils.sheet_to_json(sh,{defval:''});
+      resolve({ data: json, meta:{fields:Object.keys(json[0]||{})} });
+    };
+    reader.onerror = reject;
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+// trata linhas (CORRIGIDO)
+function normalizeRows(rows){
+  return rows.map(r=>{
+    const map = {};
+    for(const k of Object.keys(r)) map[normalizeKey(k)] = r[k];
+
+    return {
+      nome: pick(map, ['nome','cliente','nomecliente']),
+      cpf: pick(map, ['cpf','cpfcnpj','documento']),
+      endereco: pick(map, ['endereco','rua','logradouro']),
+      loja: pick(map, ['loja','marketplace','nomedaloja','shop']) || '',
+      numeroPedido: pick(map, ['numerodopedido','pedido','numero','numpedido']),
+      numeroMulti: pick(map, ['numerodopedidomultiloja','pedidomultiloja']),
+      sku: pick(map, ['sku','codigo','codigosku']),
+      descricao: pick(map, ['descricao','produto','description','title']),
+      qtd: pick(map, ['quantidade','qtd','qty']) || '1',
+      precoVenda: pick(map, ['precovenda']),
+    };
+  });
+}
+
+// filtro lojas
+function populateFilterOptions(data){
+  const set = new Set();
+  data.forEach(d=>set.add(d.loja||'Sem Loja'));
+  filterSelect.innerHTML = '<option value="">Todas</option>';
+  [...set].sort().forEach(v=>{
+    const o=document.createElement('option');
+    o.value=v; o.textContent=v;
+    filterSelect.appendChild(o);
+  });
+}
+
+// html esc
+function escapeHTML(s){
+  return s?String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])):'';
+}
+
+// render cards (CORRIGIDO)
+function renderCards(data){
+  cardsEl.innerHTML='';
+  data.forEach((d,i)=>{
+    const card=document.createElement('div');
+    card.className='card';
+    const numeroRomaneio = i + 1;
+    const totalRomaneios = data.length;
+
+    card.innerHTML=`
+      <div class="info">
+       <div style="font-size:16px;font-weight:bold;color:#ff001f;margin-bottom:8px">
+  ROMANEIO ${numeroRomaneio} de ${totalRomaneios}
+</div>
+
+        <div><b>Cliente:</b> ${escapeHTML(d.nome)}</div>
+        <div><b>CPF/CNPJ:</b> ${escapeHTML(d.cpf)}</div>
+        <div><b>Endereço:</b> ${escapeHTML(d.endereco)}</div>
+        <hr style="margin:6px 0">
+        <div><b>Loja:</b> ${escapeHTML(d.loja)}</div>
+        <div><b>Nº Pedido:</b> ${escapeHTML(d.numeroPedido)}</div>
+        <div><b>Nº Pedido Multiloja:</b> ${escapeHTML(d.numeroMulti)}</div>
+        <div><b>SKU:</b> ${escapeHTML(d.sku)}</div>
+        <div><b>Produto:</b> ${escapeHTML(d.descricao)}</div>
+        <div><b>Qtd:</b> ${escapeHTML(d.qtd)}</div>
+        <div><b>Preço Venda:</b> R$ ${escapeHTML(d.precoVenda)}</div>
+      </div>
+      <div class="barcode-wrap">
+        <svg class="barcode-svg" jsbarcode-value="${d.numeroPedido||'P'+i}"></svg>
+        <div style="font-size:12px;margin-top:6px">${d.numeroPedido||''}</div>
+        <div class="signature-area">
+          <input type="text" class="sig-input" placeholder="Nome do separador"/>
+          <button class="carimbar">Carimbar</button>
+        </div>
+        <div class="sig-text"></div>
+      </div>
+    `;
+
+    const btn = card.querySelector('.carimbar');
+    btn.onclick=()=>{
+      const inp = card.querySelector('.sig-input');
+      const sig = card.querySelector('.sig-text');
+      sig.textContent = inp.value;
+    };
+
+    cardsEl.appendChild(card);
+
+    const svg = card.querySelector('svg');
+    try {
+      JsBarcode(svg, d.numeroPedido||'',{format:"CODE128",displayValue:false,width:1.2,height:40,margin:0});
+    }catch(e){}
+  });
+}
+
+// filtro
+function applyFilter(){
+  const v = filterSelect.value;
+  visibleData = rawData.filter(r=>!v||r.loja===v);
+  renderCards(visibleData);
+}
+//Configuração PDF
+pdfBtn.onclick = async () => {
+  if (!visibleData.length) return alert("Nenhum dado carregado");
+
+  const { jsPDF } = window.jspdf;
+  const pdf = new jsPDF("p", "mm", "a4"); //Retrato
+  const margin = 8;
+  const pw = 210;
+  const ph = 297;
+  const w = pw - margin * 2;
+  const h = ph - margin * 2;
+  //Dois Romaneios por página
+  const cardH = h / 4;
+
+  for (let i = 0; i < visibleData.length; i += 4) {
+    if (i > 0) pdf.addPage();
+
+    for (let j = 0; j < 4; j++) {
+      const idx = i + j;
+      if (idx >= visibleData.length) break;
+
+      const originalCard = cardsEl.children[idx];
+      const clone = originalCard.cloneNode(true);
+
+      //clone.classList.add("print-card"); Suposto erro no código para PDF
+      clone.style.position = "fixed";
+      clone.style.left = "-2000px";
+      //Caber na escala de PDF
+      clone.style.width = w + 'mm';
+      clone.style.height = cardH + "mm";
+      clone.style.boxSizing = "border-box";
+      clone.style.overflow = "hidden";
+
+      document.body.appendChild(clone);
+
+      const svg = clone.querySelector("svg");
+      const val = svg.getAttribute("jsbarcode-value");
+      //Espaço para código de barras
+      svg.style.width = '100%';
+      svg.style.height = "60px";
+
+      svg.innerHTML = "";
+      JsBarcode(svg, val, {
+        format: "CODE128",
+        displayValue: false,
+        width: 2.4,
+        height: 55,
+        margin: 4
+      });
+
+      const canvas = await html2canvas(clone, {
+        scale: 2,
+        backgroundColor: "#ffffff"
+      });
+
+      clone.remove();
+
+      const img = canvas.toDataURL("image/png");
+      pdf.addImage(img, "PNG", margin, margin + j * cardH, w, cardH);
+    }
+  }
+
+  pdf.save("romaneio.pdf");
+};
+
+applyFilterBtn.onclick=applyFilter;
+
+fileInput.onchange = async e=>{
+  const f=e.target.files[0];
+  if (!f) return;
+  try {
+    const parsed = await parseFile(f);
+    rawData = normalizeRows(parsed.data);
+    visibleData = rawData.slice();
+    populateFilterOptions(rawData);
+    renderCards(visibleData);
+    alert('Arquivo carregado: '+rawData.length+' pedidos.');
+  } catch(err){
+    console.log(err);
+    alert('Erro ao ler arquivo');
+  }
+};
+
+})();
+</script>
+
+</body>
+</html>
